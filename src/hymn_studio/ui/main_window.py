@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from hymn_studio.audio import AudioPlayer
+from hymn_studio.exporter import ExportError, FfmpegExporter
 from hymn_studio.models import HymnProject, Slide
 from hymn_studio.project import ProjectRepository
 from hymn_studio.services.slides import SlideLoader
@@ -39,6 +40,7 @@ class MainWindow(QMainWindow):
         self._repository = ProjectRepository()
         self._slide_loader = SlideLoader()
         self._audio = AudioPlayer()
+        self._exporter = FfmpegExporter()
 
         self._slide_list = QListWidget()
         self._preview = SlidePreview()
@@ -96,7 +98,7 @@ class MainWindow(QMainWindow):
         next_button = QPushButton("Next Slide")
         next_button.clicked.connect(self._record_transition)
         export_button = QPushButton("Export MP4")
-        export_button.clicked.connect(self._export_placeholder)
+        export_button.clicked.connect(self._export_mp4)
 
         controls.addWidget(play_button)
         controls.addWidget(next_button)
@@ -198,8 +200,28 @@ class MainWindow(QMainWindow):
         except (OSError, ValueError) as error:
             self._show_error(str(error))
 
-    def _export_placeholder(self) -> None:
-        self._show_error("MP4 export will be implemented in the next focused commit.")
+    def _export_mp4(self) -> None:
+        file_name, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export MP4",
+            "Hymn.mp4",
+            "MP4 Video (*.mp4)",
+        )
+        if not file_name:
+            return
+
+        output_path = Path(file_name)
+        if output_path.suffix.lower() != ".mp4":
+            output_path = output_path.with_suffix(".mp4")
+
+        try:
+            self.statusBar().showMessage("Exporting MP4...")
+            self._exporter.export(self._project, self._slides, output_path)
+        except ExportError as error:
+            self._show_error(str(error))
+            return
+
+        self.statusBar().showMessage("MP4 exported", 3000)
 
     def _show_slide(self, index: int) -> None:
         if not self._slides:
