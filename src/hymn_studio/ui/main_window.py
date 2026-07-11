@@ -31,12 +31,12 @@ from hymn_studio.widgets.slide_preview import SlidePreview
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Hymn Studio")
         self.resize(1280, 760)
 
         self._project = HymnProject()
         self._timeline = Timeline()
         self._slides: list[Slide] = []
+        self._is_dirty = False
 
         self._repository = ProjectRepository()
         self._slide_loader = SlideLoader()
@@ -63,7 +63,15 @@ class MainWindow(QMainWindow):
         self._build_actions()
         self._build_layout()
         self.setStatusBar(QStatusBar())
+        self._update_window_title()
         self._ui_timer.start()
+
+    def closeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        if self._confirm_discard_changes():
+            event.accept()
+            return
+
+        event.ignore()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Space:
@@ -126,6 +134,9 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
 
     def _open_image_folder(self) -> None:
+        if not self._confirm_discard_changes():
+            return
+
         folder = QFileDialog.getExistingDirectory(self, "Open image folder")
         if not folder:
             return
@@ -146,6 +157,7 @@ class MainWindow(QMainWindow):
 
         self._show_slide(0)
         self._refresh_properties()
+        self._mark_dirty()
 
     def _load_audio(self) -> None:
         file_name, _ = QFileDialog.getOpenFileName(
@@ -162,6 +174,7 @@ class MainWindow(QMainWindow):
         self._audio.load(audio_path)
         self._time_slider.setEnabled(True)
         self._refresh_properties()
+        self._mark_dirty()
 
     def _play_pause(self) -> None:
         self._audio.play_pause()
@@ -180,6 +193,7 @@ class MainWindow(QMainWindow):
         self._show_slide(next_index)
         self._update_time_label(seconds)
         self._refresh_properties()
+        self._mark_dirty()
         self.statusBar().showMessage("Transition saved", 1500)
 
     def _save_project(self) -> None:
@@ -196,9 +210,14 @@ class MainWindow(QMainWindow):
             path = Path(file_name)
 
         self._repository.save(self._project, path)
+        self._is_dirty = False
+        self._update_window_title()
         self.statusBar().showMessage("Project saved", 1500)
 
     def _open_project(self) -> None:
+        if not self._confirm_discard_changes():
+            return
+
         file_name, _ = QFileDialog.getOpenFileName(
             self,
             "Open project",
@@ -222,6 +241,8 @@ class MainWindow(QMainWindow):
                 self._audio.load(self._project.audio_path)
                 self._time_slider.setEnabled(True)
             self._refresh_properties()
+            self._is_dirty = False
+            self._update_window_title()
         except (OSError, ValueError) as error:
             self._show_error(str(error))
 
@@ -323,6 +344,34 @@ class MainWindow(QMainWindow):
             f"Resolution: {self._project.video.width}x{self._project.video.height}\n"
             f"FPS: {self._project.video.fps}"
         )
+
+    def _mark_dirty(self) -> None:
+        if self._is_dirty:
+            return
+
+        self._is_dirty = True
+        self._update_window_title()
+
+    def _update_window_title(self) -> None:
+        marker = "*" if self._is_dirty else ""
+        project_name = self._project.name
+        if self._project.project_path is not None:
+            project_name = self._project.project_path.stem
+
+        self.setWindowTitle(f"{marker}{project_name} - Hymn Studio")
+
+    def _confirm_discard_changes(self) -> bool:
+        if not self._is_dirty:
+            return True
+
+        result = QMessageBox.question(
+            self,
+            "Unsaved changes",
+            "Discard unsaved project changes?",
+            QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        return result == QMessageBox.StandardButton.Discard
 
     def _show_error(self, message: str) -> None:
         QMessageBox.warning(self, "Hymn Studio", message)
