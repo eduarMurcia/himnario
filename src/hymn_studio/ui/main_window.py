@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QAction, QKeyEvent, QPixmap
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -43,14 +43,20 @@ class MainWindow(QMainWindow):
         self._exporter = FfmpegExporter()
 
         self._slide_list = QListWidget()
+        self._slide_list.currentRowChanged.connect(self._select_slide)
         self._preview = SlidePreview()
         self._properties = QLabel("No project loaded")
         self._properties.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._time_label = QLabel("00:00.000")
+        self._current_slide_index = -1
+        self._ui_timer = QTimer(self)
+        self._ui_timer.setInterval(100)
+        self._ui_timer.timeout.connect(self._sync_with_audio)
 
         self._build_actions()
         self._build_layout()
         self.setStatusBar(QStatusBar())
+        self._ui_timer.start()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Space:
@@ -122,6 +128,9 @@ class MainWindow(QMainWindow):
             return
 
         self._project.image_folder = Path(folder)
+        self._timeline.clear()
+        self._project.timestamps = []
+        self._current_slide_index = -1
         self._slide_list.clear()
         for slide in self._slides:
             self._slide_list.addItem(slide.name)
@@ -152,11 +161,15 @@ class MainWindow(QMainWindow):
             return
 
         seconds = self._audio.position_seconds
-        self._timeline.add_transition(seconds)
+        if not self._timeline.add_transition(seconds):
+            self.statusBar().showMessage("Transition ignored", 1500)
+            return
+
         self._project.timestamps = self._timeline.timestamps
         next_index = min(len(self._project.timestamps), len(self._slides) - 1)
         self._show_slide(next_index)
-        self._time_label.setText(f"{seconds:0.3f}s")
+        self._update_time_label(seconds)
+        self._refresh_properties()
         self.statusBar().showMessage("Transition saved", 1500)
 
     def _save_project(self) -> None:
@@ -190,6 +203,7 @@ class MainWindow(QMainWindow):
             self._timeline = Timeline(self._project.timestamps)
             if self._project.image_folder is not None:
                 self._slides = self._slide_loader.load_folder(self._project.image_folder)
+                self._current_slide_index = -1
                 self._slide_list.clear()
                 for slide in self._slides:
                     self._slide_list.addItem(slide.name)
@@ -226,11 +240,40 @@ class MainWindow(QMainWindow):
     def _show_slide(self, index: int) -> None:
         if not self._slides:
             self._preview.clear()
+            self._current_slide_index = -1
+            return
+
+        index = max(0, min(index, len(self._slides) - 1))
+        if index == self._current_slide_index:
             return
 
         slide = self._slides[index]
+        self._current_slide_index = index
         self._slide_list.setCurrentRow(index)
         self._preview.set_pixmap(QPixmap(str(slide.path)))
+
+    def _select_slide(self, index: int) -> None:
+        if 0 <= index < len(self._slides):
+            self._show_slide(index)
+
+    def _sync_with_audio(self) -> None:
+        seconds = self._audio.position_seconds
+        self._update_time_label(seconds)
+
+        if not self._slides:
+            return
+
+        slide_index = min(
+            self._timeline.current_slide_index(seconds),
+            len(self._slides) - 1,
+        )
+        self._show_slide(slide_index)
+
+    def _update_time_label(self, seconds: float) -> None:
+        total_milliseconds = max(0, int(seconds * 1000))
+        minutes, remainder = divmod(total_milliseconds, 60_000)
+        whole_seconds, milliseconds = divmod(remainder, 1000)
+        self._time_label.setText(f"{minutes:02}:{whole_seconds:02}.{milliseconds:03}")
 
     def _refresh_properties(self) -> None:
         image_folder = self._project.image_folder or "-"
