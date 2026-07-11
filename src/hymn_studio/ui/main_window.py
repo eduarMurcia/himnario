@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSlider,
     QSplitter,
     QStatusBar,
     QVBoxLayout,
@@ -48,6 +49,12 @@ class MainWindow(QMainWindow):
         self._properties = QLabel("No project loaded")
         self._properties.setAlignment(Qt.AlignmentFlag.AlignTop)
         self._time_label = QLabel("00:00.000")
+        self._duration_label = QLabel("00:00.000")
+        self._time_slider = QSlider(Qt.Orientation.Horizontal)
+        self._time_slider.setEnabled(False)
+        self._time_slider.setRange(0, 0)
+        self._time_slider.sliderMoved.connect(self._seek_audio)
+        self._is_updating_slider = False
         self._current_slide_index = -1
         self._ui_timer = QTimer(self)
         self._ui_timer.setInterval(100)
@@ -110,6 +117,8 @@ class MainWindow(QMainWindow):
         controls.addWidget(next_button)
         controls.addStretch()
         controls.addWidget(self._time_label)
+        controls.addWidget(self._time_slider, 2)
+        controls.addWidget(self._duration_label)
         controls.addWidget(export_button)
 
         root_layout.addWidget(splitter)
@@ -151,6 +160,7 @@ class MainWindow(QMainWindow):
         audio_path = Path(file_name)
         self._project.audio_path = audio_path
         self._audio.load(audio_path)
+        self._time_slider.setEnabled(True)
         self._refresh_properties()
 
     def _play_pause(self) -> None:
@@ -210,6 +220,7 @@ class MainWindow(QMainWindow):
                 self._show_slide(0)
             if self._project.audio_path is not None:
                 self._audio.load(self._project.audio_path)
+                self._time_slider.setEnabled(True)
             self._refresh_properties()
         except (OSError, ValueError) as error:
             self._show_error(str(error))
@@ -258,7 +269,10 @@ class MainWindow(QMainWindow):
 
     def _sync_with_audio(self) -> None:
         seconds = self._audio.position_seconds
+        duration = self._audio.duration_seconds
         self._update_time_label(seconds)
+        self._update_duration_label(duration)
+        self._update_time_slider(seconds, duration)
 
         if not self._slides:
             return
@@ -270,10 +284,33 @@ class MainWindow(QMainWindow):
         self._show_slide(slide_index)
 
     def _update_time_label(self, seconds: float) -> None:
+        self._time_label.setText(self._format_time(seconds))
+
+    def _update_duration_label(self, seconds: float) -> None:
+        self._duration_label.setText(self._format_time(seconds))
+
+    def _format_time(self, seconds: float) -> str:
         total_milliseconds = max(0, int(seconds * 1000))
         minutes, remainder = divmod(total_milliseconds, 60_000)
         whole_seconds, milliseconds = divmod(remainder, 1000)
-        self._time_label.setText(f"{minutes:02}:{whole_seconds:02}.{milliseconds:03}")
+        return f"{minutes:02}:{whole_seconds:02}.{milliseconds:03}"
+
+    def _update_time_slider(self, seconds: float, duration: float) -> None:
+        if self._time_slider.isSliderDown():
+            return
+
+        self._is_updating_slider = True
+        self._time_slider.setRange(0, max(0, int(duration * 1000)))
+        self._time_slider.setValue(max(0, int(seconds * 1000)))
+        self._is_updating_slider = False
+
+    def _seek_audio(self, milliseconds: int) -> None:
+        if self._is_updating_slider:
+            return
+
+        seconds = milliseconds / 1000
+        self._audio.seek(seconds)
+        self._update_time_label(seconds)
 
     def _refresh_properties(self) -> None:
         image_folder = self._project.image_folder or "-"

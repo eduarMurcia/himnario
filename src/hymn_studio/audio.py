@@ -25,6 +25,9 @@ class AudioPlayer:
     def load(self, path: Path) -> None:
         self._player.setSource(QUrl.fromLocalFile(str(path)))
 
+    def seek(self, seconds: float) -> None:
+        self._player.setPosition(max(0, int(seconds * 1000)))
+
     def play_pause(self) -> None:
         if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self._player.pause()
