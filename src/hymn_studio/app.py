@@ -13,6 +13,7 @@ def create_app(argv: Sequence[str]) -> QApplication:
     app.setOrganizationName("Hymn Studio")
 
     window = MainWindow()
+    app.main_window = window  # type: ignore[attr-defined]
     window.show()
 
     return app
