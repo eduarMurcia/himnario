@@ -6,15 +6,23 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "PySide6>=6.8",
+    "pypdf>=5.0",
+    "python-docx>=1.1",
+    "python-pptx>=1.0",
+    "Pillow>=11.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "ruff>=0.8",
 ]
+windows = [
+    "pywin32>=306; sys_platform == 'win32'",
+]
 
 [project.scripts]
 hymn-studio = "hymn_studio.main:main"
+hymn-studio-build = "hymn_studio.cli:main"
 
 [build-system]
 requires = ["setuptools>=75", "wheel"]
