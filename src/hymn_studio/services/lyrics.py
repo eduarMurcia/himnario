@@ -87,14 +87,27 @@ class LyricsExtractor:
         return Lyrics(title=title, stanzas=stanzas)
 
     def _split_into_blocks(self, lines: list[str]) -> list[list[str]]:
+        """Splits on blank lines, and also forces a new block to start at a chorus
+        heading (e.g. "CORO") even without a preceding blank line: source documents
+        are inconsistent about separating the chorus from the verse above it, and a
+        missed blank line must not merge the chorus into the previous verse."""
         blocks: list[list[str]] = []
         current: list[str] = []
         for line in lines:
-            if line:
-                current.append(line)
-            elif current:
+            if not line:
+                if current:
+                    blocks.append(current)
+                    current = []
+                continue
+
+            if (
+                current
+                and self._is_chorus_heading(line)
+                and not self._is_chorus_heading(current[0])
+            ):
                 blocks.append(current)
                 current = []
+            current.append(line)
         if current:
             blocks.append(current)
         return blocks

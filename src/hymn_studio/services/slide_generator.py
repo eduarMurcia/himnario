@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import io
 import shutil
 import tempfile
 from pathlib import Path
@@ -8,6 +9,7 @@ from typing import Protocol
 
 from PIL import Image, ImageDraw, ImageFont
 from pptx import Presentation
+from pptx.enum.dml import MSO_COLOR_TYPE
 from pptx.slide import Slide
 
 from hymn_studio.models import ImageOverlay, Lyrics, SlideTemplate, TextOverlay
@@ -242,7 +244,7 @@ class PptxSlideBuilder:
             raise SlideGenerationError(f"Stanza template has no slides: {self._stanza_template}")
 
         stanza_slide_source = stanza_source.slides[0]
-        stanza_layout = self._ensure_layout(presentation, stanza_slide_source.slide_layout)
+        stanza_layout = self._any_layout(presentation)
 
         for stanza in lyrics.stanzas:
             new_slide = self._duplicate_slide(presentation, stanza_slide_source, stanza_layout)
@@ -251,16 +253,12 @@ class PptxSlideBuilder:
         presentation.save(str(combined_path))
         return combined_path
 
-    def _ensure_layout(self, presentation: Presentation, source_layout):
-        for master in presentation.slide_masters:
-            for layout in master.slide_layouts:
-                if layout.name == source_layout.name:
-                    return layout
-
-        target_master = presentation.slide_masters[0]
-        new_layout_element = copy.deepcopy(source_layout.element)
-        target_master.slide_layouts._sldLayoutLst.append(new_layout_element)
-        return target_master.slide_layouts[-1]
+    def _any_layout(self, presentation: Presentation):
+        """Returns any existing slide layout from the presentation. The layout choice
+        doesn't affect the final slide: _duplicate_slide immediately strips every
+        placeholder shape the layout would contribute and replaces the slide's
+        content with a deep copy of the source slide's own shapes."""
+        return presentation.slide_masters[0].slide_layouts[0]
 
     def _duplicate_slide(self, presentation: Presentation, source_slide: Slide, layout) -> Slide:
         new_slide = presentation.slides.add_slide(layout)
@@ -272,31 +270,86 @@ class PptxSlideBuilder:
             new_element = copy.deepcopy(shape.element)
             new_slide.shapes._spTree.append(new_element)
 
-            if getattr(shape, "image", None) is not None:
-                self._copy_image_relationship(new_slide, shape, new_element)
-
+        self._remap_images(source_slide, new_slide)
         return new_slide
 
-    def _copy_image_relationship(self, new_slide: Slide, shape, new_element) -> None:
-        blip = new_element.find(".//{http://schemas.openxmlformats.org/drawingml/2006/main}blip")
-        if blip is None:
-            return
-
+    def _remap_images(self, source_slide: Slide, new_slide: Slide) -> None:
+        """Re-embeds every image referenced anywhere in new_slide's shape tree,
+        including pictures nested inside (possibly nested) groups, resolving the
+        original bytes from source_slide's relationships."""
+        blip_tag = "{http://schemas.openxmlformats.org/drawingml/2006/main}blip"
         r_embed_attr = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed"
-        if blip.get(r_embed_attr) is None:
-            return
 
-        _, new_r_id = new_slide.part.get_or_add_image_part(shape.image.blob)
-        blip.set(r_embed_attr, new_r_id)
+        for blip in new_slide.shapes._spTree.iter(blip_tag):
+            old_r_id = blip.get(r_embed_attr)
+            if not old_r_id:
+                continue
+
+            try:
+                image_part = source_slide.part.related_part(old_r_id)
+            except KeyError:
+                continue
+
+            _, new_r_id = new_slide.part.get_or_add_image_part(io.BytesIO(image_part.blob))
+            blip.set(r_embed_attr, new_r_id)
 
     def _fill_placeholder_text(self, slide: Slide, text: str) -> None:
-        for shape in slide.shapes:
-            if not shape.has_text_frame:
-                continue
-            shape.text_frame.text = text
+        for shape in self._iter_text_shapes(slide.shapes):
+            self._set_text_preserving_format(shape.text_frame, text)
             return
 
         raise SlideGenerationError("Template slide has no text placeholder to fill.")
+
+    def _set_text_preserving_format(self, text_frame, text: str) -> None:
+        """Replaces a text frame's content line-by-line, re-applying the font (name,
+        size, bold, italic, color) of the template's original first run to every new
+        run. TextFrame.text = ... would otherwise silently discard that formatting."""
+        template_font = self._first_run_font(text_frame)
+        alignment = text_frame.paragraphs[0].alignment if text_frame.paragraphs else None
+
+        lines = text.split("\n") or [""]
+
+        text_frame.text = lines[0]
+        first_paragraph = text_frame.paragraphs[0]
+        if alignment is not None:
+            first_paragraph.alignment = alignment
+        self._apply_font(first_paragraph.runs[0], template_font)
+
+        for line in lines[1:]:
+            paragraph = text_frame.add_paragraph()
+            if alignment is not None:
+                paragraph.alignment = alignment
+            run = paragraph.add_run()
+            run.text = line
+            self._apply_font(run, template_font)
+
+    def _first_run_font(self, text_frame):
+        for paragraph in text_frame.paragraphs:
+            for run in paragraph.runs:
+                return run.font
+        return None
+
+    def _apply_font(self, run, template_font) -> None:
+        if template_font is None:
+            return
+
+        font = run.font
+        font.name = template_font.name
+        font.size = template_font.size
+        font.bold = template_font.bold
+        font.italic = template_font.italic
+        if template_font.color and template_font.color.type == MSO_COLOR_TYPE.RGB:
+            font.color.rgb = template_font.color.rgb
+
+    def _iter_text_shapes(self, shapes):
+        """Depth-first walk of a shape tree, yielding text-frame shapes. Recurses into
+        GROUP shapes since real-world templates often nest title/subtitle text boxes
+        inside one or more grouped shapes."""
+        for shape in shapes:
+            if shape.shape_type == 6:  # MSO_SHAPE_TYPE.GROUP
+                yield from self._iter_text_shapes(shape.shapes)
+            elif shape.has_text_frame:
+                yield shape
 
 
 class PowerPointPngExporter:

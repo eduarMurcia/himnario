@@ -26,10 +26,10 @@ class PillowTemplateConfig:
         except json.JSONDecodeError as error:
             raise TemplateConfigError(f"Invalid JSON in template config: {config_path}") from error
 
-    def build_cover_template(self, background: Path) -> SlideTemplate:
+    def build_cover_template(self, background: Path | None = None) -> SlideTemplate:
         return self._build_template(self._section("cover"), background)
 
-    def build_stanza_template(self, background: Path) -> SlideTemplate:
+    def build_stanza_template(self, background: Path | None = None) -> SlideTemplate:
         return self._build_template(self._section("stanza"), background)
 
     def _section(self, name: str) -> dict:
@@ -41,10 +41,19 @@ class PillowTemplateConfig:
         path = Path(value)
         return path if path.is_absolute() else self._base_dir / path
 
-    def _build_template(self, section: dict, background: Path) -> SlideTemplate:
+    def _build_template(self, section: dict, background: Path | None) -> SlideTemplate:
+        resolved_background = background
+        if resolved_background is None:
+            if "background" not in section:
+                raise TemplateConfigError(
+                    "Missing required template field: 'background' (not provided "
+                    "on the command line or in the template config)."
+                )
+            resolved_background = self._resolve_path(section["background"])
+
         try:
             return SlideTemplate(
-                background=background,
+                background=resolved_background,
                 font_path=self._resolve_path(section["font"]),
                 font_size=int(section["font_size"]),
                 text_color=tuple(section.get("text_color", (255, 255, 255))),

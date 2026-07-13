@@ -34,20 +34,25 @@ def _first_lyric_line(lyrics: Lyrics) -> str:
     return lyrics.stanzas[0].text.splitlines()[0]
 
 
-def _build_slides(lyrics: Lyrics, output_dir: Path, args: argparse.Namespace) -> Path:
+def _build_slides(
+    lyrics: Lyrics,
+    output_dir: Path,
+    args: argparse.Namespace,
+    *,
+    template_path: str | None = None,
+) -> Path:
     slides_dir = output_dir / "slides"
 
     if args.engine == "pillow":
-        if not (args.cover_background and args.stanza_background):
-            raise SlideGenerationError(
-                "--cover-background and --stanza-background are required for the pillow engine."
-            )
+        chosen_template = template_path or (args.template[0] if args.template else None)
 
-        if args.template:
-            template_config = PillowTemplateConfig(Path(args.template))
-            cover_template = template_config.build_cover_template(Path(args.cover_background))
-            stanza_template = template_config.build_stanza_template(Path(args.stanza_background))
-        else:
+        if chosen_template:
+            template_config = PillowTemplateConfig(Path(chosen_template))
+            cover_background = Path(args.cover_background) if args.cover_background else None
+            stanza_background = Path(args.stanza_background) if args.stanza_background else None
+            cover_template = template_config.build_cover_template(cover_background)
+            stanza_template = template_config.build_stanza_template(stanza_background)
+        elif args.cover_background and args.stanza_background:
             if not args.font:
                 raise SlideGenerationError(
                     "--font is required for the pillow engine when --template is not given."
@@ -61,6 +66,11 @@ def _build_slides(lyrics: Lyrics, output_dir: Path, args: argparse.Namespace) ->
                 background=Path(args.stanza_background),
                 font_path=Path(args.font),
                 font_size=args.font_size,
+            )
+        else:
+            raise SlideGenerationError(
+                "--template (with an embedded background), or --cover-background and "
+                "--stanza-background, are required for the pillow engine."
             )
 
         PillowSlideBuilder(cover_template, stanza_template).build(lyrics, slides_dir)
@@ -120,26 +130,37 @@ def build_all_command(args: argparse.Namespace) -> None:
     ).extract_docx(lyrics_path)
 
     matcher = AudioMatcher(audio_dirs)
+    templates: list[str | None] = args.template or [None]
 
     built: list[str] = []
-    skipped: list[str] = []
-    for lyrics in hymns:
+    missing_audio: list[str] = []
+    for index, lyrics in enumerate(hymns, start=1):
         audio_path = matcher.find(lyrics.title) or matcher.find(_first_lyric_line(lyrics))
-        if audio_path is None:
-            skipped.append(lyrics.title)
-            continue
+        template_path = templates[(index - 1) % len(templates)]
 
-        hymn_dir = output_dir / _safe_filename(lyrics.title)
-        slides_dir = _build_slides(lyrics, hymn_dir, args)
+        folder_name = _safe_filename(lyrics.title)
+        if audio_path is None:
+            missing_audio.append(lyrics.title)
+            folder_name += " (SIN AUDIO)"
+
+        hymn_dir = output_dir / folder_name
+        slides_dir = _build_slides(lyrics, hymn_dir, args, template_path=template_path)
         project_path = _save_project(lyrics, audio_path, slides_dir, hymn_dir)
         built.append(lyrics.title)
-        print(f"Project ready: {project_path}")
+        marker = " (sin audio)" if audio_path is None else ""
+        print(f"Project ready: {project_path}{marker}")
 
-    print(f"\n{len(built)} project(s) built, {len(skipped)} skipped (no matching audio).")
-    if skipped:
-        print("Skipped (no audio found):")
-        for title in skipped:
-            print(f"  - {title}")
+    print(f"\n{len(built)} project(s) built, {len(missing_audio)} without matching audio.")
+    if missing_audio:
+        report_path = output_dir / "himnos_sin_audio.txt"
+        report_lines = [
+            f"Himnos de {lyrics_path.name} sin audio encontrado automaticamente",
+            "(revisado en carpetas: " + ", ".join(str(d) for d in audio_dirs) + ")",
+            "",
+            *missing_audio,
+        ]
+        report_path.write_text("\n".join(report_lines) + "\n", encoding="utf-8")
+        print(f"Lista de himnos sin audio guardada en: {report_path}")
 
 
 def export_command(args: argparse.Namespace) -> None:
@@ -197,9 +218,12 @@ def _add_slide_engine_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--template",
+        action="append",
         help=(
-            "Reusable Pillow styling config (JSON): font, positions, colors and "
-            "overlays. Overrides --font/--font-size (pillow engine)."
+            "Reusable Pillow styling config (JSON): font, positions, colors, overlays "
+            "and (optionally) its own background. Overrides --font/--font-size (pillow "
+            "engine). Repeat for build-all to rotate several templates across hymns in "
+            "document order (hymn 1 -> 1st --template, hymn 2 -> 2nd, ...)."
         ),
     )
 
